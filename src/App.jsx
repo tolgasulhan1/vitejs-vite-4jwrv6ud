@@ -13,6 +13,7 @@ const BASE_FIRE_COOLDOWN = 180;
 const CANDY_PTS = 5;
 const GOLD_PTS = 25;
 const JELLY_PTS = 12;
+const BOSS_HIT_PTS = 30;
 const COMBO_WINDOW = 1500;
 const MAX_COMBO = 5;
 const MAX_LIVES = 5;
@@ -24,12 +25,17 @@ const POWER_CHANCE = 0.035;
 const JELLY_CHANCE = 0.1;
 const JELLY_FROM_LEVEL = 8;
 const POWER_MS = 6000;
-const LEVEL_COUNT = 60;
+const LEVEL_COUNT = 100;
 const NODE_GAP = 96;
 const DAILY_REWARD = 25;
 const CROWN_REWARD = 100;
+const BOSS_REWARD = 60;
 const MELODY = [523, 659, 784, 659, 523, 587, 698, 587, 494, 587, 784, 659];
 const SAVE_KEY = "candy-save";
+
+const ASSET_CASTLE = "/assets/castle.png";
+const ASSET_KING = "/assets/king.png";
+const ASSET_QUEEN = "/assets/queen.png";
 
 const POWERS = {
   multi: { icon: "⚡", name: "Çoklu atış", color: "#fde047" },
@@ -42,6 +48,21 @@ const KING_LINES = [
   "Krallığım şekerlerin istilası altında. Bana yardım eder misin?",
   "Her taç, bir dünyanın kurtuluşudur. Devam et!",
   "Odalarımı onarırsan saray eskisi gibi parlayacak.",
+];
+
+const ROYAL_TASKS = [
+  { id: "k1", who: "king", text: "Kral: 5 bölümü 3 yıldızla bitir", check: (d) => Object.values(d.stars).filter((s) => s === 3).length >= 5, reward: 80 },
+  { id: "q1", who: "queen", text: "Kraliçe: 100 altın şeker topla", check: (d) => d.stats.totalGolds >= 100, reward: 80 },
+  { id: "k2", who: "king", text: "Kral: Şeker Golemi'ni yen", check: (d) => (d.stats.bossKills || 0) >= 1, reward: 100 },
+  { id: "q2", who: "queen", text: "Kraliçe: Bir odayı tam onar (Lv 3)", check: (d) => Object.values(d.rooms || {}).some((v) => v >= 3), reward: 100 },
+  { id: "k3", who: "king", text: "Kral: 3 taç kazan", check: (d) => (d.crownsClaimed || []).length >= 3, reward: 150 },
+  { id: "q3", who: "queen", text: "Kraliçe: 50 bölüm tamamla", check: (d) => d.stats.wins >= 50, reward: 150 },
+];
+
+const QUEEN_LINES = [
+  "Sevgili şövalyem, saraya dönüşün bizi çok mutlu etti.",
+  "Altın şekerler ruhumu aydınlatır. Biraz daha topla!",
+  "Odalar güzelleşirken saray da bana yakışmaya başlıyor.",
 ];
 
 const CSS = `
@@ -59,6 +80,9 @@ const CSS = `
 @keyframes cdFlag { 0%,100% { transform: skewX(0deg); } 50% { transform: skewX(-10deg); } }
 @keyframes cdSparkle { 0%,100% { opacity: 0.2; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
 @keyframes cdBokeh { 0%,100% { transform: translateY(0); opacity: 0.5; } 50% { transform: translateY(-14px); opacity: 0.9; } }
+@keyframes cdRays { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes cdBossIdle { 0%,100% { transform: translateY(0) scaleY(1); } 50% { transform: translateY(4px) scaleY(0.96); } }
+@keyframes cdSpeak { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
 `;
 
 const WORLDS = [
@@ -115,13 +139,16 @@ const WORLDS = [
 const OBJECTIVES = ["score", "gold", "survive"];
 
 function levelConfig(n) {
-  const world = WORLDS[Math.min(WORLDS.length - 1, Math.floor((n - 1) / 5))];
+  const world = WORLDS[Math.floor((n - 1) / 5) % WORLDS.length];
+  const isBoss = n % 10 === 0;
   const type = OBJECTIVES[(n - 1) % 3];
   return {
     n,
     world,
     type,
-    speed: Math.min(4.2, 1.2 + n * 0.1),
+    isBoss,
+    bossHp: 10 + Math.floor(n / 4),
+    speed: Math.min(5.2, 1.2 + n * 0.1),
     spawn: Math.max(18, 62 - n * 1.8),
     target: 60 + n * 30,
     goldNeed: 2 + Math.floor(n / 2),
@@ -184,6 +211,7 @@ const ACHIEVEMENTS = [
   { id: "kills", name: "Şeker Kırıcı", desc: "500 şeker patlat", reward: 100, goal: 500, value: (d) => d.stats.totalKills },
   { id: "collector", name: "Koleksiyoncu", desc: "5 bonbon sahibi ol", reward: 80, goal: 5, value: (d) => d.owned.length },
   { id: "crowns", name: "Kral Dostu", desc: "3 taç kazan", reward: 150, goal: 3, value: (d) => (d.crownsClaimed || []).length },
+  { id: "bosses", name: "Golem Avcısı", desc: "3 boss yen", reward: 120, goal: 3, value: (d) => d.stats.bossKills || 0 },
 ];
 
 const todayStr = () => new Date().toDateString();
@@ -199,10 +227,11 @@ const DEFAULT_SAVE = {
   rooms: { taht: 0, firin: 0, bahce: 0, kule: 0 },
   unlockedLevel: 1,
   stars: {},
-  stats: { wins: 0, totalGolds: 0, totalKills: 0, bestCombo: 0 },
+  stats: { wins: 0, totalGolds: 0, totalKills: 0, bestCombo: 0, bossKills: 0 },
   daily: { date: "", kills: 0, golds: 0, combo: 0, claimed: [] },
   seenStory: [],
   crownsClaimed: [],
+  royalClaimed: [],
   claimed: [],
   lastDaily: "",
   musicOn: true,
@@ -220,7 +249,7 @@ const makeSparkles = () =>
     tw: rnd(1.5, 3.5),
   }));
 
-const initialGame = (sparkles, lives, shield) => ({
+const initialGame = (sparkles, lives, shield, boss) => ({
   playerX: W / 2 - PLAYER_W / 2,
   prevX: W / 2 - PLAYER_W / 2,
   tilt: 0,
@@ -230,6 +259,7 @@ const initialGame = (sparkles, lives, shield) => ({
   particles: [],
   popups: [],
   rings: [],
+  sparks: [],
   sparkles,
   score: 0,
   golds: 0,
@@ -247,19 +277,8 @@ const initialGame = (sparkles, lives, shield) => ({
   shake: 0,
   flash: 0,
   flashColor: "255,80,120",
+  boss,
 });
-
-// Ortak yardımcı: yumuşak gölge filtresi
-function SoftShadow({ id }) {
-  return (
-    <filter id={id} x="-30%" y="-30%" width="160%" height="170%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="2" />
-      <feOffset dx="0" dy="2.5" result="b" />
-      <feComponentTransfer><feFuncA type="linear" slope="0.45" /></feComponentTransfer>
-      <feMerge><feMergeNode /><feMergeNode in="SourceGraphic" /></feMerge>
-    </filter>
-  );
-}
 
 function Sparkle4({ size, color = "#fff" }) {
   return (
@@ -269,7 +288,18 @@ function Sparkle4({ size, color = "#fff" }) {
   );
 }
 
-// Kağıda sarılı, folyo kıvrımlı bonbon
+// Beyaz arka planı saydam yapan filtre (görseller için)
+function KeyWhiteFilter() {
+  return (
+    <svg width="0" height="0" style={{ position: "absolute" }}>
+      <filter id="keyWhite" colorInterpolationFilters="sRGB">
+        <feColorMatrix in="SourceGraphic" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  -2 -2 -2 0 5.2" result="key" />
+        <feComposite in="SourceGraphic" in2="key" operator="in" />
+      </filter>
+    </svg>
+  );
+}
+
 function WrappedCandy({ color, width, height, glow }) {
   const uid = useId().replace(/:/g, "");
   const dark = `color-mix(in srgb, ${color} 55%, #000)`;
@@ -318,7 +348,6 @@ function SkinCandy({ skin, width, height, glow }) {
   return <WrappedCandy color={skin.color} width={width} height={height} glow={glow} />;
 }
 
-// Spiral lolipop: çubuk ve cam gibi parlayan yuvarlak başlık
 function Lollipop({ color, size }) {
   const uid = useId().replace(/:/g, "");
   const dark = `color-mix(in srgb, ${color} 50%, #000)`;
@@ -340,13 +369,11 @@ function Lollipop({ color, size }) {
       <circle cx="20" cy="18" r="16" fill="#fff" opacity="0.9" />
       <circle cx="20" cy="18" r="14.2" fill={`url(#c${uid})`} />
       <path d="M20 18 m0 -2 a2 2 0 1 1 -2 2 a4 4 0 1 1 6 -2 a6 6 0 1 1 -10 4 a8 8 0 1 1 13 -8" stroke="#fff" strokeWidth="2.4" fill="none" opacity="0.75" strokeLinecap="round" />
-      <path d="M20 18 m0 -2 a2 2 0 1 1 -2 2 a4 4 0 1 1 6 -2 a6 6 0 1 1 -10 4 a8 8 0 1 1 13 -8" stroke={dark} strokeWidth="0.6" fill="none" opacity="0.35" />
       <ellipse cx="13" cy="10" rx="4" ry="2.2" fill="#fff" opacity="0.85" />
     </svg>
   );
 }
 
-// Bölmeli çikolata tableti: bevel ve kakao tozu parlaklığı
 function ChocoBar({ width, height }) {
   const uid = useId().replace(/:/g, "");
   return (
@@ -373,7 +400,6 @@ function ChocoBar({ width, height }) {
   );
 }
 
-// Jelibon: yarı saydam, içten ışıklı, göz ve parlama
 function Gummy({ color, width, height }) {
   const uid = useId().replace(/:/g, "");
   const dark = `color-mix(in srgb, ${color} 55%, #000)`;
@@ -421,7 +447,6 @@ function Heart({ size }) {
   );
 }
 
-// Metalik altın şeker: kenarlı madeni para görünümü
 function GoldCandy({ size }) {
   const uid = useId().replace(/:/g, "");
   return (
@@ -452,7 +477,6 @@ function GoldCandy({ size }) {
   );
 }
 
-// Yarı saydam jöle: çatlak ve iç ışıltı
 function JellyBlock({ hp }) {
   const uid = useId().replace(/:/g, "");
   return (
@@ -470,6 +494,39 @@ function JellyBlock({ hp }) {
       <circle cx="28" cy="27" r="2" fill="#fff" opacity="0.5" />
       {hp === 1 && <path d="M12 10 L20 22 L16 30 L26 36" stroke="#fff" strokeWidth="1.4" fill="none" opacity="0.9" />}
     </svg>
+  );
+}
+
+function BossGolem({ hp, maxHp, hit }) {
+  const uid = useId().replace(/:/g, "");
+  const ratio = hp / maxHp;
+  return (
+    <div style={{ animation: "cdBossIdle 2s ease-in-out infinite", filter: hit > 0 ? "brightness(1.8)" : "none" }}>
+      <svg width="120" height="104" viewBox="0 0 120 104" style={{ overflow: "visible", filter: "drop-shadow(0 10px 12px rgba(30,20,60,0.5))" }}>
+        <defs>
+          <radialGradient id={"bg" + uid} cx="35%" cy="28%" r="80%">
+            <stop offset="0%" stopColor="#fff" stopOpacity="0.85" />
+            <stop offset="30%" stopColor="#f472b6" />
+            <stop offset="75%" stopColor="#9d174d" />
+            <stop offset="100%" stopColor="#4a044e" />
+          </radialGradient>
+          <radialGradient id={"core" + uid} cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#fde047" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#fde047" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        <path d="M60 6 C90 6 110 30 110 58 C110 84 92 98 60 98 C28 98 10 84 10 58 C10 30 30 6 60 6 Z" fill={`url(#bg${uid})`} stroke="#fdf2f8" strokeWidth="2" opacity={0.6 + ratio * 0.4} />
+        <ellipse cx="60" cy="56" rx="24" ry="20" fill={`url(#core${uid})`} opacity={ratio} />
+        <path d="M26 30 Q40 18 54 28" stroke="#fff" strokeWidth="4" fill="none" opacity="0.6" strokeLinecap="round" />
+        <ellipse cx="44" cy="50" rx="7" ry="8" fill="#1f2937" />
+        <ellipse cx="76" cy="50" rx="7" ry="8" fill="#1f2937" />
+        <circle cx="46" cy="47" r="2.2" fill="#fff" />
+        <circle cx="78" cy="47" r="2.2" fill="#fff" />
+        <path d="M42 72 Q60 84 78 72" stroke="#1f2937" strokeWidth="3" fill="none" strokeLinecap="round" />
+        {ratio < 0.7 && <path d="M36 20 L44 34 L38 42" stroke="#fff" strokeWidth="1.4" fill="none" opacity="0.9" />}
+        {ratio < 0.4 && <path d="M86 26 L78 40 L84 52 L74 62" stroke="#fff" strokeWidth="1.4" fill="none" opacity="0.9" />}
+      </svg>
+    </div>
   );
 }
 
@@ -491,171 +548,52 @@ function renderBlockContent(b) {
   return <div style={{ animation: "cdBob 2s ease-in-out infinite" }}><Gummy color={b.color} width={BLOCK_SIZE} height={BLOCK_SIZE} /></div>;
 }
 
-// Taş dokulu, pencere ışıklı gerçekçi kraliyet sarayı
-function CastleArt({ rooms }) {
+// Kraliyet sarayı: görsel dosyası, odalar onarıldıkça parlar
+function CastleView({ rooms }) {
   const total = Object.values(rooms).reduce((a, b) => a + b, 0);
-  const uid = useId().replace(/:/g, "");
+  const glow = Math.min(0.6, total * 0.04);
   return (
-    <svg width="300" height="200" viewBox="0 0 300 200" style={{ overflow: "visible", filter: "drop-shadow(0 12px 14px rgba(30,20,60,0.45))" }}>
-      <defs>
-        <linearGradient id={"stone" + uid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#f5f3ff" />
-          <stop offset="60%" stopColor="#cbb8f5" />
-          <stop offset="100%" stopColor="#8b6fd1" />
-        </linearGradient>
-        <linearGradient id={"roof" + uid} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#9d174d" />
-          <stop offset="50%" stopColor="#f472b6" />
-          <stop offset="100%" stopColor="#9d174d" />
-        </linearGradient>
-        <linearGradient id={"gold" + uid} x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stopColor="#a16207" />
-          <stop offset="50%" stopColor="#fef08a" />
-          <stop offset="100%" stopColor="#a16207" />
-        </linearGradient>
-        <pattern id={"brick" + uid} width="14" height="8" patternUnits="userSpaceOnUse">
-          <rect width="14" height="8" fill="none" />
-          <path d="M0 8 H14 M7 0 V8" stroke="#6d28d9" strokeWidth="0.6" opacity="0.35" />
-        </pattern>
-        <radialGradient id={"win" + uid} cx="50%" cy="40%" r="60%">
-          <stop offset="0%" stopColor="#fef9c3" />
-          <stop offset="60%" stopColor="#fde047" />
-          <stop offset="100%" stopColor="#ca8a04" stopOpacity="0.6" />
-        </radialGradient>
-        <linearGradient id={"ground" + uid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#86efac" stopOpacity="0.9" />
-          <stop offset="100%" stopColor="#15803d" stopOpacity="0.9" />
-        </linearGradient>
-      </defs>
-
-      <ellipse cx="150" cy="192" rx="140" ry="8" fill="#1e1b4b" opacity="0.35" />
-      <path d="M0 176 Q60 160 120 172 T260 168 T300 176 L300 200 L0 200 Z" fill={`url(#ground${uid})`} />
-
-      <rect x="18" y="112" width="264" height="66" rx="4" fill={`url(#stone${uid})`} stroke="#6d28d9" strokeWidth="1.5" />
-      <rect x="18" y="112" width="264" height="66" rx="4" fill={`url(#brick${uid})`} />
-      <rect x="18" y="112" width="264" height="5" fill="#fff" opacity="0.5" />
-      {[34, 60, 88, 212, 240, 266].map((x) => (
-        <g key={x}>
-          <rect x={x} y="122" width="10" height="16" rx="5" fill="#4c1d95" />
-          <rect x={x + 1.5} y="123.5" width="7" height="13" rx="3.5" fill={`url(#win${uid})`} opacity="0.85" />
-        </g>
-      ))}
-      <rect x="122" y="130" width="56" height="48" rx="28" fill="#2e1065" />
-      <rect x="128" y="136" width="44" height="42" rx="22" fill="#1e1b4b" />
-      <path d="M128 176 L128 146 Q150 128 172 146 L172 176 Z" fill={`url(#win${uid})`} opacity="0.55" />
-      <line x1="150" y1="136" x2="150" y2="178" stroke="#4c1d95" strokeWidth="1.5" opacity="0.7" />
-
-      <rect x="56" y="62" width="54" height="56" fill={`url(#stone${uid})`} stroke="#6d28d9" strokeWidth="1.5" />
-      <rect x="56" y="62" width="54" height="56" fill={`url(#brick${uid})`} />
-      <path d="M46 64 L83 26 L120 64 Z" fill={`url(#roof${uid})`} stroke="#701a75" strokeWidth="1" />
-      <path d="M83 26 L120 64 L83 64 Z" fill="#000" opacity="0.12" />
-
-      <rect x="190" y="62" width="54" height="56" fill={`url(#stone${uid})`} stroke="#6d28d9" strokeWidth="1.5" />
-      <rect x="190" y="62" width="54" height="56" fill={`url(#brick${uid})`} />
-      <path d="M180 64 L217 26 L254 64 Z" fill={`url(#roof${uid})`} stroke="#701a75" strokeWidth="1" />
-      <path d="M217 26 L254 64 L217 64 Z" fill="#000" opacity="0.12" />
-
-      <rect x="118" y="32" width="64" height="86" fill={`url(#stone${uid})`} stroke="#6d28d9" strokeWidth="1.5" />
-      <rect x="118" y="32" width="64" height="86" fill={`url(#brick${uid})`} />
-      <rect x="118" y="32" width="64" height="5" fill="#fff" opacity="0.5" />
-      <path d="M108 36 L150 2 L192 36 Z" fill={`url(#gold${uid})`} stroke="#92400e" strokeWidth="1" />
-      <path d="M150 2 L192 36 L150 36 Z" fill="#000" opacity="0.14" />
-      <circle cx="150" cy="54" r="7" fill="#fef9c3" stroke="#a16207" strokeWidth="1.2" />
-      <circle cx="150" cy="54" r="3" fill="#f472b6" />
-      <line x1="150" y1="2" x2="150" y2="-18" stroke="#4c1d95" strokeWidth="2" />
-      <path d="M150 -18 L176 -11 L150 -4 Z" fill="#f472b6" style={{ transformOrigin: "150px -11px", animation: "cdFlag 1.6s ease-in-out infinite" }} />
-      <line x1="83" y1="26" x2="83" y2="8" stroke="#4c1d95" strokeWidth="2" />
-      <path d="M83 8 L102 14 L83 20 Z" fill="#67e8f9" style={{ transformOrigin: "83px 14px", animation: "cdFlag 1.9s ease-in-out infinite" }} />
-      <line x1="217" y1="26" x2="217" y2="8" stroke="#4c1d95" strokeWidth="2" />
-      <path d="M217 8 L236 14 L217 20 Z" fill="#a3e635" style={{ transformOrigin: "217px 14px", animation: "cdFlag 2.1s ease-in-out infinite" }} />
-
-      <path d="M136 42 L140 36 L145 40 L150 34 L155 40 L160 36 L164 42 Z" fill={`url(#gold${uid})`} opacity="0.9" transform="translate(0,-2)" />
-
-      {total >= 4 && <circle cx="150" cy="-24" r="4" fill="#fde047" style={{ animation: "cdSparkle 2s ease-in-out infinite", transformOrigin: "150px -24px" }} />}
-      {total >= 8 && <circle cx="83" cy="48" r="3" fill="#fde047" style={{ animation: "cdSparkle 1.8s ease-in-out infinite" }} />}
-      {total >= 12 && <circle cx="217" cy="48" r="3" fill="#fde047" style={{ animation: "cdSparkle 2.2s ease-in-out infinite" }} />}
-    </svg>
-  );
-}
-
-// Kral Şekerius: gölgeli, altın taçlı ve pelerinli portre
-function KingPortrait({ mood }) {
-  const uid = useId().replace(/:/g, "");
-  return (
-    <div className="relative inline-block" style={{ animation: "cdBob 2.8s ease-in-out infinite" }}>
-      <svg width="96" height="106" viewBox="0 0 90 100" style={{ overflow: "visible", filter: "drop-shadow(0 8px 8px rgba(30,20,60,0.45))" }}>
-        <defs>
-          <linearGradient id={"cape" + uid} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#5b21b6" />
-            <stop offset="50%" stopColor="#8b5cf6" />
-            <stop offset="100%" stopColor="#4c1d95" />
-          </linearGradient>
-          <radialGradient id={"skin" + uid} cx="40%" cy="35%" r="70%">
-            <stop offset="0%" stopColor="#fde7cf" />
-            <stop offset="100%" stopColor="#d9a77a" />
-          </radialGradient>
-          <linearGradient id={"crown" + uid} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#fef9c3" />
-            <stop offset="50%" stopColor="#facc15" />
-            <stop offset="100%" stopColor="#a16207" />
-          </linearGradient>
-        </defs>
-        <path d="M14 98 Q14 60 45 56 Q76 60 76 98 Z" fill={`url(#cape${uid})`} />
-        <path d="M30 56 L45 98 L60 56" fill="#fde047" opacity="0.85" />
-        <rect x="36" y="58" width="18" height="34" rx="6" fill="#7c3aed" />
-        <circle cx="45" cy="66" r="2" fill="#fde047" />
-        <circle cx="45" cy="78" r="2" fill="#fde047" />
-        <circle cx="45" cy="42" r="19" fill={`url(#skin${uid})`} />
-        <path d="M28 40 Q28 22 45 22 Q62 22 62 40 Q56 30 45 29 Q34 30 28 40 Z" fill="#78350f" opacity="0.9" />
-        <path d="M26 36 Q28 60 45 62 Q62 60 64 36 Q62 52 45 54 Q28 52 26 36 Z" fill="#e5e7eb" opacity="0.92" />
-        <path d="M24 30 L28 12 L37 22 L45 6 L53 22 L62 12 L66 30 Z" fill={`url(#crown${uid})`} stroke="#92400e" strokeWidth="1" />
-        <rect x="24" y="28" width="42" height="5" rx="2" fill="#a16207" />
-        <circle cx="45" cy="9" r="2.8" fill="#f472b6" stroke="#fff" strokeWidth="0.6" />
-        <circle cx="34" cy="18" r="2" fill="#67e8f9" />
-        <circle cx="56" cy="18" r="2" fill="#67e8f9" />
-        <ellipse cx="38" cy="42" rx="2.4" ry="2.8" fill="#1f2937" />
-        <ellipse cx="52" cy="42" rx="2.4" ry="2.8" fill="#1f2937" />
-        <circle cx="38.8" cy="41" r="0.8" fill="#fff" />
-        <circle cx="52.8" cy="41" r="0.8" fill="#fff" />
-        <path d="M34 36 Q38 34 42 36" stroke="#78350f" strokeWidth="1.2" fill="none" />
-        <path d="M48 36 Q52 34 56 36" stroke="#78350f" strokeWidth="1.2" fill="none" />
-        <path d="M40 52 Q45 56 50 52" stroke="#7c2d12" strokeWidth="1.6" fill="none" strokeLinecap="round" />
-      </svg>
-      <div className="absolute -top-3 -right-16 bg-white rounded-2xl px-3 py-1 text-[11px] font-bold text-fuchsia-800 shadow-lg w-40" style={{ animation: "cdPop 0.4s ease-out" }}>
-        {mood}
-        <div className="absolute -left-1 bottom-3 w-3 h-3 bg-white rotate-45" />
-      </div>
+    <div style={{ position: "relative", width: 300, height: 260 }}>
+      <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 120, filter: "drop-shadow(0 8px 10px rgba(30,20,60,0.4))" }}>🏰</div>
+      <img
+        src={ASSET_CASTLE}
+        alt="Kraliyet Sarayı"
+        style={{ width: 300, height: 260, objectFit: "contain", filter: "url(#keyWhite) drop-shadow(0 12px 14px rgba(30,20,60,0.45))" }}
+        onError={(e) => { e.currentTarget.style.display = "none"; }}
+      />
+      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(circle at 50% 40%, rgba(253,224,71,${glow}), transparent 60%)`, pointerEvents: "none" }} />
+      {total >= 4 && <Sparkle4 size={16} color="#fde047" />}
     </div>
   );
 }
 
-// Bulanık ışıklar ve uzak tepeler: dünyaya göre katmanlı arka plan
-function WorldBackdrop({ world }) {
-  const bokeh = useMemo(() => Array.from({ length: 9 }, (_, i) => ({
-    id: i,
-    left: rnd(0, 90),
-    top: rnd(0, 80),
-    size: rnd(40, 110),
-    delay: rnd(0, 4),
-    dur: rnd(5, 9),
-  })), [world]);
+// Royal karakter: mutluluk seviyesine göre görünüm değişir
+function RoyalPortrait({ src, mood, happy, lines, side = "left" }) {
+  const isHappy = mood >= 0.67;
+  const isOk = mood >= 0.34 && !isHappy;
+  const dim = isHappy ? "none" : isOk ? "saturate(0.8) brightness(0.95)" : "grayscale(0.5) brightness(0.85)";
   return (
-    <div style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}>
-      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 0%, ${world.glow} 0%, transparent 60%)`, opacity: 0.85 }} />
-      {bokeh.map((b) => (
-        <div
-          key={b.id}
-          style={{
-            position: "absolute", left: `${b.left}%`, top: `${b.top}%`, width: b.size, height: b.size, borderRadius: "50%",
-            background: `radial-gradient(circle, ${world.glow} 0%, transparent 70%)`, filter: "blur(6px)",
-            animation: `cdBokeh ${b.dur}s ease-in-out ${b.delay}s infinite`,
-          }}
+    <div className="relative flex flex-col items-center" style={{ width: 150 }}>
+      <div style={{ position: "relative", width: 140, height: 170, animation: isHappy ? "cdBob 1.6s ease-in-out infinite" : "none" }}>
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 90 }}>{happy === "Kral" ? "🤴" : "👸"}</div>
+        <img
+          src={src}
+          alt={happy}
+          style={{ width: 140, height: 170, objectFit: "contain", filter: `url(#keyWhite) ${dim} drop-shadow(0 8px 8px rgba(30,20,60,0.45))` }}
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
         />
-      ))}
-      <svg viewBox="0 0 400 180" preserveAspectRatio="none" style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: 160, opacity: 0.55 }}>
-        <path d="M0 110 Q60 60 120 100 T240 90 T400 100 L400 180 L0 180 Z" fill={world.hills} />
-        <path d="M0 140 Q80 110 160 135 T320 128 T400 136 L400 180 L0 180 Z" fill={world.hills} opacity="0.8" />
-      </svg>
+        {isHappy && <Sparkle4 size={18} color="#fde047" />}
+      </div>
+      <div
+        className="bg-white rounded-2xl px-3 py-1 text-[11px] font-bold text-fuchsia-800 shadow-lg mt-1 text-center"
+        style={{ animation: "cdSpeak 3s ease-in-out infinite", maxWidth: 170, minHeight: 34 }}
+      >
+        {lines}
+      </div>
+      <div className="w-full h-2 bg-fuchsia-100 rounded-full mt-2 overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${mood * 100}%`, background: "linear-gradient(to right,#f472b6,#fde047)" }} />
+      </div>
+      <p className="text-[10px] font-bold text-fuchsia-900 mt-0.5">Mutluluk %{Math.round(mood * 100)}</p>
     </div>
   );
 }
@@ -664,11 +602,12 @@ const btn = "px-5 py-2 bg-gradient-to-b from-white to-fuchsia-50 text-fuchsia-60
 const panel = "w-full max-w-[400px] bg-white/85 backdrop-blur rounded-2xl shadow-xl p-4 border border-white";
 
 const objectiveText = (cfg) => {
+  if (cfg.isBoss) return `👹 Şeker Golemi'ni yen (${cfg.bossHp} vuruş)`;
   if (cfg.type === "score") return `🎯 ${cfg.target} puan topla`;
   if (cfg.type === "gold") return `🌟 ${cfg.goldNeed} altın şeker vur`;
   return `⏱ ${Math.round(cfg.surviveMs / 1000)} saniye hayatta kal`;
 };
-const objectiveIcon = (cfg) => (cfg.type === "score" ? "🎯" : cfg.type === "gold" ? "🌟" : "⏱");
+const objectiveIcon = (cfg) => (cfg.isBoss ? "👹" : cfg.type === "score" ? "🎯" : cfg.type === "gold" ? "🌟" : "⏱");
 
 function DecorLayer({ world }) {
   const items = useMemo(() => Array.from({ length: 12 }, (_, i) => ({
@@ -702,9 +641,48 @@ function DecorLayer({ world }) {
   );
 }
 
+function WorldBackdrop({ world }) {
+  const bokeh = useMemo(() => Array.from({ length: 9 }, (_, i) => ({
+    id: i,
+    left: rnd(0, 90),
+    top: rnd(0, 80),
+    size: rnd(40, 110),
+    delay: rnd(0, 4),
+    dur: rnd(5, 9),
+  })), [world]);
+  return (
+    <div style={{ position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden" }}>
+      <div style={{ position: "absolute", left: "-50%", top: "-50%", width: "200%", height: "200%", background: `repeating-conic-gradient(from 0deg, ${world.glow}22 0deg 6deg, transparent 6deg 18deg)`, animation: "cdRays 40s linear infinite", opacity: 0.8 }} />
+      <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 0%, ${world.glow} 0%, transparent 60%)`, opacity: 0.85 }} />
+      {bokeh.map((b) => (
+        <div
+          key={b.id}
+          style={{
+            position: "absolute", left: `${b.left}%`, top: `${b.top}%`, width: b.size, height: b.size, borderRadius: "50%",
+            background: `radial-gradient(circle, ${world.glow} 0%, transparent 70%)`, filter: "blur(6px)",
+            animation: `cdBokeh ${b.dur}s ease-in-out ${b.delay}s infinite`,
+          }}
+        />
+      ))}
+      <svg viewBox="0 0 400 180" preserveAspectRatio="none" style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: 160, opacity: 0.55 }}>
+        <path d="M0 110 Q60 60 120 100 T240 90 T400 100 L400 180 L0 180 Z" fill={world.hills} />
+        <path d="M0 140 Q80 110 160 135 T320 128 T400 136 L400 180 L0 180 Z" fill={world.hills} opacity="0.8" />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.35) 100%)" }} />
+    </div>
+  );
+}
+
 function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFinish }) {
   const gameRef = useRef(null);
-  if (gameRef.current === null) gameRef.current = initialGame(makeSparkles(), lives, shieldOn);
+  if (gameRef.current === null) {
+    gameRef.current = initialGame(
+      makeSparkles(),
+      lives,
+      shieldOn,
+      cfg.isBoss ? { x: W / 2 - 60, y: 40, w: 120, h: 104, dir: 1, hp: cfg.bossHp, maxHp: cfg.bossHp, shootT: 60, hit: 0 } : null
+    );
+  }
   const [view, setView] = useState(() => ({ ...gameRef.current }));
   const keysRef = useRef({ left: false, right: false });
   const frameRef = useRef(null);
@@ -766,7 +744,17 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         lives: g.lives,
         kills: g.kills,
         maxCombo: g.maxCombo,
+        bossKilled: !!(g.boss && g.boss.hp <= 0),
       });
+    };
+
+    const spark = (x, y, color, count, power = 1) => {
+      const g = gameRef.current;
+      for (let k = 0; k < count; k++) {
+        const a = rnd(0, Math.PI * 2);
+        const s = rnd(1, 4.5) * power;
+        g.sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, color });
+      }
     };
 
     const loop = (now) => {
@@ -799,6 +787,24 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         return { ...p, y, tw: p.tw + ms / 1000 };
       });
 
+      const boss = g.boss;
+      if (boss && boss.hp > 0) {
+        boss.x += boss.dir * 1.6 * dt;
+        if (boss.x < 6) { boss.x = 6; boss.dir = 1; }
+        if (boss.x > W - boss.w - 6) { boss.x = W - boss.w - 6; boss.dir = -1; }
+        if (boss.hit > 0) boss.hit -= dt;
+        boss.shootT -= dt;
+        if (boss.shootT <= 0) {
+          g.blocks.push({
+            id: idRef.current++, x: boss.x + boss.w / 2 - BLOCK_SIZE / 2, y: boss.y + boss.h,
+            kind: "candy", zig: false, vx: 0, color: CANDY_COLORS[Math.floor(Math.random() * CANDY_COLORS.length)],
+            shape: SHAPES[Math.floor(Math.random() * SHAPES.length)],
+          });
+          boss.shootT = Math.max(40, 90 - c.n * 0.3);
+        }
+        if (boss.hp <= 0) boss.hp = 0;
+      }
+
       const makeBlock = (kind, power) => {
         const zig = c.zigzag && (kind === "candy" || kind === "jelly") && Math.random() < c.zigChance;
         return {
@@ -815,8 +821,9 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         };
       };
 
+      const bossAlive = !!(boss && boss.hp > 0);
       g.spawnTimer -= dt;
-      if (g.spawnTimer <= 0) {
+      if (g.spawnTimer <= 0 && !(c.isBoss && !bossAlive && boss)) {
         const roll = Math.random();
         const pKeys = Object.keys(POWERS);
         let kind = "candy";
@@ -856,7 +863,7 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
           ...b,
           x: b.x + (b.vx || 0) * dt,
           y: b.y - BULLET_SPEED * dt,
-          trail: [{ y: b.y, x: b.x }, ...b.trail].slice(0, 6),
+          trail: [{ y: b.y, x: b.x }, ...b.trail].slice(0, 7),
         }))
         .filter((b) => b.y > -10 && b.x > -10 && b.x < W + 10);
 
@@ -874,6 +881,19 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
       const usedBullets = new Set();
 
       g.bullets.forEach((bl, bi) => {
+        if (boss && boss.hp > 0 && bl.x > boss.x && bl.x < boss.x + boss.w && bl.y > boss.y && bl.y < boss.y + boss.h) {
+          usedBullets.add(bi);
+          boss.hp -= 1;
+          boss.hit = 6;
+          g.score += BOSS_HIT_PTS;
+          g.kills += 1;
+          propsRef.current.sfx("pop");
+          spark(bl.x, boss.y + boss.h, "#f472b6", 22, 1.4);
+          g.rings.push({ x: bl.x, y: boss.y + boss.h / 2, life: 1, color: "251,113,133", size: 2.2 });
+          g.shake = Math.max(g.shake, 160);
+          newPopups.push({ x: bl.x, y: boss.y + boss.h, text: `-1 · ${boss.hp}/${boss.maxHp}`, life: 1, big: true });
+          return;
+        }
         const target = g.blocks.find(
           (b) => b.kind !== "heart" && b.kind !== "power" && !destroyed.has(b.id) &&
             bl.x > b.x && bl.x < b.x + BLOCK_SIZE && bl.y > b.y && bl.y < b.y + BLOCK_SIZE
@@ -887,10 +907,7 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         if (target.kind === "jelly" && target.hp > 1) {
           target.hp -= 1;
           propsRef.current.sfx("pop");
-          for (let k = 0; k < 8; k++) {
-            const angle = (Math.PI * 2 * k) / 8;
-            newParticles.push({ x: cx, y: cy, vx: Math.cos(angle) * 2, vy: Math.sin(angle) * 2, life: 0.8, color: "#f472b6", star: false, size: 4, rot: 0 });
-          }
+          spark(cx, cy, "#f472b6", 10, 0.8);
           newPopups.push({ x: cx, y: cy, text: "Çatladı!", life: 1 });
           return;
         }
@@ -920,17 +937,14 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
             life: 1, color, star: k % 3 === 0, size: rnd(3, 6), rot: rnd(0, 360),
           });
         }
+        spark(cx, cy, isGold ? "#fef08a" : "#fff", isGold ? 14 : 8, 1);
         g.rings.push({ x: cx, y: cy, life: 1, color: isGold ? "250,204,21" : "255,255,255", size: 1.2 });
         newPopups.push({ x: cx, y: cy, text: `+${pts}`, life: 1, big: mult >= 3 });
         if (mult >= 2) newPopups.push({ x: cx, y: cy - 16, text: `KOMBO x${mult}`, life: 1, combo: true });
       });
 
-      if (destroyed.size) {
-        g.blocks = g.blocks.filter((b) => !destroyed.has(b.id));
-      }
-      if (usedBullets.size) {
-        g.bullets = g.bullets.filter((_, bi) => !usedBullets.has(bi));
-      }
+      if (destroyed.size) g.blocks = g.blocks.filter((b) => !destroyed.has(b.id));
+      if (usedBullets.size) g.bullets = g.bullets.filter((_, bi) => !usedBullets.has(bi));
 
       const py = H - PLAYER_H - 10;
       const touching = (b) =>
@@ -947,12 +961,14 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
             newPopups.push({ x: b.x + BLOCK_SIZE / 2, y: py, text: "+❤️", life: 1 });
             g.flash = 300;
             g.flashColor = "251,113,133";
+            g.rings.push({ x: b.x + BLOCK_SIZE / 2, y: py, life: 1, color: "251,113,133", size: 1.8 });
             propsRef.current.sfx("heart");
           } else if (b.kind === "power") {
             g.powers[b.power] = POWER_MS;
             newPopups.push({ x: b.x + BLOCK_SIZE / 2, y: py - 8, text: `${POWERS[b.power].icon} ${POWERS[b.power].name}`, life: 1, big: true });
             g.flash = 200;
             g.flashColor = "253,224,71";
+            g.rings.push({ x: b.x + BLOCK_SIZE / 2, y: py, life: 1, color: "253,224,71", size: 2 });
             propsRef.current.sfx("heart");
           } else if ((b.kind === "candy" || b.kind === "jelly") && g.invuln <= 0) {
             g.combo = 0;
@@ -963,6 +979,7 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
               g.flash = 250;
               g.flashColor = "125,211,252";
               newPopups.push({ x: g.playerX + PLAYER_W / 2, y: py - 10, text: "🛡️ Kalkan!", life: 1 });
+              g.rings.push({ x: g.playerX + PLAYER_W / 2, y: py, life: 1, color: "125,211,252", size: 2.4 });
               propsRef.current.sfx("pop");
             } else {
               g.lives -= 1;
@@ -971,12 +988,16 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
               g.flash = 400;
               g.flashColor = "220,38,38";
               newPopups.push({ x: g.playerX + PLAYER_W / 2, y: py - 10, text: "-❤️", life: 1 });
+              spark(g.playerX + PLAYER_W / 2, py, "#ef4444", 16, 1.2);
               propsRef.current.sfx("hurt");
             }
           }
         });
       }
 
+      g.sparks = g.sparks
+        .map((s) => ({ ...s, x: s.x + s.vx * dt, y: s.y + s.vy * dt, vy: s.vy + 0.06 * dt, life: s.life - 0.03 * dt }))
+        .filter((s) => s.life > 0);
       g.particles = [...g.particles, ...newParticles]
         .map((p) => ({ ...p, x: p.x + p.vx * dt, y: p.y + p.vy * dt, vx: p.vx * 0.99, vy: p.vy + 0.09 * dt, life: p.life - 0.025 * dt, rot: (p.rot || 0) + 6 * dt }))
         .filter((p) => p.life > 0);
@@ -984,16 +1005,17 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         .map((p) => ({ ...p, y: p.y - 0.9 * dt, life: p.life - 0.018 * dt }))
         .filter((p) => p.life > 0);
       g.rings = g.rings
-        .map((r) => ({ ...r, life: r.life - 0.05 * dt }))
+        .map((r) => ({ ...r, life: r.life - 0.04 * dt }))
         .filter((r) => r.life > 0);
 
       g.score += 0.1 * dt;
 
       if (g.lives <= 0) return finish(false);
-      const done =
-        c.type === "score" ? g.score >= c.target :
-        c.type === "gold" ? g.golds >= c.goldNeed :
-        g.elapsed >= c.surviveMs;
+      const done = c.isBoss
+        ? !!(boss && boss.hp <= 0)
+        : c.type === "score" ? g.score >= c.target
+        : c.type === "gold" ? g.golds >= c.goldNeed
+        : g.elapsed >= c.surviveMs;
       if (done) return finish(true);
 
       setView({
@@ -1007,7 +1029,9 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         particles: [...g.particles],
         popups: [...g.popups],
         rings: [...g.rings],
+        sparks: [...g.sparks],
         sparkles: [...g.sparkles],
+        boss: g.boss ? { ...g.boss } : null,
         score: g.score,
         golds: g.golds,
         elapsed: g.elapsed,
@@ -1031,14 +1055,18 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
 
   const moveTo = (clientX, rect) => {
     if (doneRef.current) return;
-    gameRef.current.playerX = Math.max(0, Math.min(W - PLAYER_W, clientX - rect.left - PLAYER_W / 2));
+    const sc = rect.width / W || 1;
+    gameRef.current.playerX = Math.max(0, Math.min(W - PLAYER_W, (clientX - rect.left) / sc - PLAYER_W / 2));
   };
 
   const score = Math.floor(view.score);
   const mult = Math.min(view.combo, MAX_COMBO);
   let frac = 0;
   let objLabel = "";
-  if (cfg.type === "score") { frac = view.score / cfg.target; objLabel = `🎯 Puan ${score} / ${cfg.target}`; }
+  if (cfg.isBoss) {
+    frac = view.boss ? 1 - view.boss.hp / view.boss.maxHp : 1;
+    objLabel = `👹 Golem ${view.boss ? view.boss.hp : 0} / ${cfg.bossHp}`;
+  } else if (cfg.type === "score") { frac = view.score / cfg.target; objLabel = `🎯 Puan ${score} / ${cfg.target}`; }
   else if (cfg.type === "gold") { frac = view.golds / cfg.goldNeed; objLabel = `🌟 Altın ${view.golds} / ${cfg.goldNeed}`; }
   else { frac = view.elapsed / cfg.surviveMs; objLabel = `⏱ ${Math.max(0, Math.ceil((cfg.surviveMs - view.elapsed) / 1000))} sn kaldı`; }
   const progress = Math.min(100, frac * 100);
@@ -1049,7 +1077,7 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
     <div className="flex flex-col items-center gap-2 p-2">
       <div className="w-full max-w-[400px]">
         <div className="flex justify-between items-center text-sm font-extrabold text-white" style={{ textShadow: "0 2px 4px rgba(0,0,0,0.4)" }}>
-          <span>{cfg.world.icon} Bölüm {cfg.n}</span>
+          <span>{cfg.world.icon} Bölüm {cfg.n}{cfg.isBoss ? " · BOSS" : ""}</span>
           <span>{objLabel}</span>
         </div>
         <div className="w-full h-3 bg-black/25 rounded-full mt-1 overflow-hidden ring-1 ring-white/40 shadow-inner">
@@ -1076,6 +1104,7 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
           width: W,
           height: H,
           maxWidth: "100%",
+          touchAction: "none",
           border: "4px solid rgba(255,255,255,0.85)",
           boxShadow: "0 24px 48px -12px rgba(30,20,60,0.55), inset 0 0 60px rgba(255,255,255,0.2), inset 0 -40px 60px -30px rgba(0,0,0,0.25)",
           background: `linear-gradient(to bottom, ${cfg.world.bg[0]}, ${cfg.world.bg[1]} 55%, ${cfg.world.bg[2]})`,
@@ -1101,6 +1130,15 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
           </div>
         ))}
 
+        {view.boss && view.boss.hp > 0 && (
+          <div style={{ position: "absolute", left: view.boss.x - 10, top: view.boss.y - 6, width: view.boss.w + 20, pointerEvents: "none" }}>
+            <BossGolem hp={view.boss.hp} maxHp={view.boss.maxHp} hit={view.boss.hit} />
+            <div style={{ marginTop: 4, width: "100%", height: 8, background: "rgba(0,0,0,0.4)", borderRadius: 6, overflow: "hidden", border: "1px solid rgba(255,255,255,0.7)" }}>
+              <div style={{ width: `${(view.boss.hp / view.boss.maxHp) * 100}%`, height: "100%", background: "linear-gradient(to right, #fb7185, #facc15)", transition: "width 0.2s", boxShadow: "0 0 8px #fb7185" }} />
+            </div>
+          </div>
+        )}
+
         {view.blocks.map((b) => (
           <div key={b.id} style={{ position: "absolute", left: b.x, top: b.y, width: BLOCK_SIZE, height: BLOCK_SIZE }}>
             {b.zig && <div style={{ position: "absolute", inset: -4, borderRadius: "50%", border: "2px dashed rgba(255,255,255,0.8)", animation: "cdGlow 1s ease-in-out infinite" }} />}
@@ -1111,9 +1149,9 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
         {view.bullets.map((bl, i) => (
           <div key={"b" + i}>
             {bl.trail.map((t, j) => (
-              <div key={"t" + j} style={{ position: "absolute", left: t.x - 3, top: t.y - 3, width: 6, height: 6, borderRadius: "50%", background: trailColor, opacity: (1 - j / 6) * 0.5, filter: "blur(1px)", pointerEvents: "none" }} />
+              <div key={"t" + j} style={{ position: "absolute", left: t.x - 3, top: t.y - 3, width: 6 - j * 0.5, height: 6 - j * 0.5, borderRadius: "50%", background: trailColor, opacity: (1 - j / 7) * 0.55, filter: "blur(1px)", boxShadow: `0 0 6px ${trailColor}`, pointerEvents: "none" }} />
             ))}
-            <div style={{ position: "absolute", left: bl.x - 6, top: bl.y - 6, width: 12, height: 12, borderRadius: "50%", background: `radial-gradient(circle at 35% 30%, #ffffff 0%, ${trailColor} 55%, color-mix(in srgb, ${trailColor} 60%, #000) 100%)`, boxShadow: `0 0 12px 3px ${trailColor}` }} />
+            <div style={{ position: "absolute", left: bl.x - 6, top: bl.y - 6, width: 12, height: 12, borderRadius: "50%", background: `radial-gradient(circle at 35% 30%, #ffffff 0%, ${trailColor} 55%, color-mix(in srgb, ${trailColor} 60%, #000) 100%)`, boxShadow: `0 0 14px 4px ${trailColor}` }} />
           </div>
         ))}
 
@@ -1124,9 +1162,13 @@ function Game({ cfg, skin, trailColor, lives, shieldOn, fireCooldown, sfx, onFin
               position: "absolute", left: r.x, top: r.y, width: 60 * r.size, height: 60 * r.size,
               borderRadius: "50%", border: `2px solid rgba(${r.color},${r.life})`,
               transform: `translate(-50%,-50%) scale(${2 - r.life})`, pointerEvents: "none",
-              boxShadow: `0 0 14px rgba(${r.color},${r.life * 0.6})`,
+              boxShadow: `0 0 16px rgba(${r.color},${r.life * 0.6}), inset 0 0 12px rgba(${r.color},${r.life * 0.3})`,
             }}
           />
+        ))}
+
+        {view.sparks.map((s, i) => (
+          <div key={"sp" + i} style={{ position: "absolute", left: s.x - 1.5, top: s.y - 1.5, width: 3, height: 3, borderRadius: "50%", background: s.color, boxShadow: `0 0 6px ${s.color}`, opacity: Math.max(0, s.life), pointerEvents: "none" }} />
         ))}
 
         {view.particles.map((p, i) => (
@@ -1220,7 +1262,7 @@ function LevelMap({ data, onPlay, mapRef }) {
 
         {worlds.map((w) => {
           const top = w * 5 * NODE_GAP;
-          const wd = WORLDS[w];
+          const wd = WORLDS[w % WORLDS.length];
           return (
             <div key={"w" + w} className="absolute left-0 right-0 flex justify-center" style={{ top: top + 6 }}>
               <span className="px-3 py-0.5 rounded-full text-xs font-extrabold text-white shadow" style={{ background: `linear-gradient(to right, ${wd.bg[1]}, ${wd.bg[2]})` }}>
@@ -1243,14 +1285,16 @@ function LevelMap({ data, onPlay, mapRef }) {
                 style={{
                   background: !unlocked
                     ? "linear-gradient(to bottom, #cbd5e1, #94a3b8)"
-                    : `radial-gradient(circle at 35% 28%, #fff 0%, ${nd.cfg.world.bg[1]} 35%, ${nd.cfg.world.bg[2]} 100%)`,
+                    : nd.cfg.isBoss
+                      ? "radial-gradient(circle at 35% 28%, #fecdd3, #be123c 55%, #4a044e)"
+                      : `radial-gradient(circle at 35% 28%, #fff 0%, ${nd.cfg.world.bg[1]} 35%, ${nd.cfg.world.bg[2]} 100%)`,
                   border: "3px solid white",
                   boxShadow: "0 6px 0 rgba(0,0,0,0.2), 0 10px 16px rgba(0,0,0,0.3), inset 0 -4px 6px rgba(0,0,0,0.15)",
                   animation: isCurrent ? "cdCurrent 1.6s ease-out infinite" : undefined,
                   textShadow: "0 2px 3px rgba(0,0,0,0.4)",
                 }}
               >
-                {unlocked ? nd.n : "🔒"}
+                {unlocked ? (nd.cfg.isBoss ? "👹" : nd.n) : "🔒"}
               </button>
               <div className="flex gap-0.5 mt-1 text-xs">
                 {[1, 2, 3].map((s) => (
@@ -1259,7 +1303,7 @@ function LevelMap({ data, onPlay, mapRef }) {
               </div>
               {unlocked && (
                 <span className="text-[10px] font-bold text-white mt-0.5 px-1.5 rounded-full bg-black/35 whitespace-nowrap">
-                  {objectiveIcon(nd.cfg)} {nd.cfg.type === "score" ? nd.cfg.target : nd.cfg.type === "gold" ? nd.cfg.goldNeed : Math.round(nd.cfg.surviveMs / 1000)}
+                  {objectiveIcon(nd.cfg)} {nd.cfg.isBoss ? nd.n : nd.cfg.type === "score" ? nd.cfg.target : nd.cfg.type === "gold" ? nd.cfg.goldNeed : Math.round(nd.cfg.surviveMs / 1000)}
                 </span>
               )}
             </div>
@@ -1282,10 +1326,22 @@ export default function CandyDodgeApp() {
   const [shopTab, setShopTab] = useState("skins");
   const [storyLevel, setStoryLevel] = useState(null);
   const [kingLine, setKingLine] = useState(KING_LINES[0]);
+  const [scale, setScale] = useState(1);
   const dataRef = useRef(data);
   dataRef.current = data;
   const audioRef = useRef(null);
   const mapRef = useRef(null);
+
+  useEffect(() => {
+    const fit = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      setScale(Math.max(0.5, Math.min(1.4, vw / 420, vh / 660)));
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1373,6 +1429,11 @@ export default function CandyDodgeApp() {
 
   const cons = data.consumables || { shield: 0, extraLife: 0 };
   const rooms = { taht: 0, firin: 0, bahce: 0, kule: 0, ...(data.rooms || {}) };
+  const royalClaimed = data.royalClaimed || [];
+  const kingTasks = ROYAL_TASKS.filter((t) => t.who === "king");
+  const queenTasks = ROYAL_TASKS.filter((t) => t.who === "queen");
+  const kingMood = kingTasks.filter((t) => royalClaimed.includes(t.id)).length / kingTasks.length;
+  const queenMood = queenTasks.filter((t) => royalClaimed.includes(t.id)).length / queenTasks.length;
   const today = todayStr();
   const dailyAvailable = data.lastDaily !== today;
   const dailyState = data.daily && data.daily.date === today
@@ -1395,6 +1456,13 @@ export default function CandyDodgeApp() {
     setData((d) => ({ ...d, coins: d.coins + CROWN_REWARD, crownsClaimed: [...(d.crownsClaimed || []), wi] }));
     sfx("crown");
     flash(`👑 ${WORLDS[wi].name} tacı: +${CROWN_REWARD} coin`);
+  };
+
+  const claimRoyal = (t) => {
+    if (royalClaimed.includes(t.id) || !t.check(dataRef.current)) return;
+    setData((d) => ({ ...d, coins: d.coins + t.reward, royalClaimed: [...(d.royalClaimed || []), t.id] }));
+    sfx("claim");
+    flash(t.who === "king" ? "Kral mutlu! 👑" : "Kraliçe mutlu! 👸");
   };
 
   const claimDaily = () => {
@@ -1477,7 +1545,7 @@ export default function CandyDodgeApp() {
     const d0 = dataRef.current;
     const r0 = { taht: 0, firin: 0, bahce: 0, kule: 0, ...(d0.rooms || {}) };
     const coinMult = 1 + (r0.firin || 0) * 0.1 + (r0.taht || 0) * 0.05;
-    const baseCoins = res.won ? 15 + stars * 10 + cfg.n * 2 : Math.floor(res.score / 10);
+    const baseCoins = res.won ? 15 + stars * 10 + cfg.n * 2 + (cfg.isBoss ? BOSS_REWARD : 0) : Math.floor(res.score / 10);
     const coins = Math.round(baseCoins * (res.won ? coinMult : 1));
 
     setData((d) => {
@@ -1490,6 +1558,7 @@ export default function CandyDodgeApp() {
         totalGolds: prev.totalGolds + res.golds,
         totalKills: prev.totalKills + res.kills,
         bestCombo: Math.max(prev.bestCombo, res.maxCombo),
+        bossKills: (prev.bossKills || 0) + (res.bossKilled ? 1 : 0),
       };
       const ds = d.daily && d.daily.date === today ? d.daily : { date: today, kills: 0, golds: 0, combo: 0, claimed: [] };
       const newDaily = {
@@ -1622,15 +1691,44 @@ export default function CandyDodgeApp() {
       <div className="flex flex-col items-center gap-4 p-4 w-full">
         <Header title="Kraliyet Sarayı" />
         <div className={panel + " flex flex-col items-center gap-2"}>
-          <CastleArt rooms={rooms} />
+          <CastleView rooms={rooms} />
           <p className="text-xs font-bold text-fuchsia-900">Onarılan oda puanı: {roomLevelSum} / 12</p>
         </div>
 
-        <div className="flex items-end gap-3 justify-center w-full max-w-[400px]">
-          <KingPortrait mood={kingLine} />
+        <div className={panel + " flex justify-around items-start gap-2"}>
+          <RoyalPortrait
+            src={ASSET_KING}
+            mood={kingMood}
+            happy="Kral"
+            lines={kingMood >= 0.67 ? "Saray artık çok güzel! Teşekkürler." : kingLine.slice(0, 60)}
+          />
+          <RoyalPortrait
+            src={ASSET_QUEEN}
+            mood={queenMood}
+            happy="Kraliçe"
+            lines={queenMood >= 0.67 ? "Kalbim şekerler kadar tatlı!" : QUEEN_LINES[Math.floor(queenMood * 2) % QUEEN_LINES.length]}
+          />
         </div>
 
-        <p className="text-sm font-extrabold text-fuchsia-900">Odaları onar</p>
+        <p className="text-sm font-extrabold text-fuchsia-900">Kraliyet görevleri</p>
+        <p className="text-xs text-fuchsia-900 font-semibold text-center max-w-[400px]">Görevleri tamamladıkça kral ve kraliçe mutlu olur.</p>
+        {ROYAL_TASKS.map((t) => {
+          const done = t.check(data);
+          const claimed = royalClaimed.includes(t.id);
+          return (
+            <div key={t.id} className={panel + " flex items-center justify-between gap-3"}>
+              <div className="flex items-center gap-3">
+                <span className="text-3xl" style={{ filter: "drop-shadow(0 3px 3px rgba(0,0,0,0.3))" }}>{t.who === "king" ? "🤴" : "👸"}</span>
+                <p className="font-bold text-fuchsia-800 text-sm">{t.text}</p>
+              </div>
+              <button className={btn} disabled={!done || claimed} onClick={() => claimRoyal(t)}>
+                {claimed ? "✓" : done ? `🍬 ${t.reward}` : "🔒"}
+              </button>
+            </div>
+          );
+        })}
+
+        <p className="text-sm font-extrabold text-fuchsia-900 mt-2">Odaları onar</p>
         {ROOMS.map((r) => {
           const lvl = rooms[r.id] || 0;
           const maxed = lvl >= r.costs.length;
@@ -1709,7 +1807,7 @@ export default function CandyDodgeApp() {
         </p>
         <LevelMap data={data} onPlay={(n) => requestStart(n)} mapRef={mapRef} />
         <p className="text-[11px] text-fuchsia-900 font-semibold text-center max-w-[400px]">
-          Her dünyanın ilk bölümünde hikâye açılır. 8. seviyeden itibaren çatlayan jöleler çıkar.
+          Her 10. seviyede Şeker Golemi boss savaşı var. Her dünyanın ilk bölümünde hikâye açılır.
         </p>
       </div>
     );
@@ -1742,8 +1840,8 @@ export default function CandyDodgeApp() {
     content = (
       <div className="flex flex-col items-center justify-center gap-5 min-h-[600px] p-4">
         <div className={panel + " text-center"} style={{ animation: "cdPop 0.4s ease-out" }}>
-          <p className="text-6xl mb-2" style={{ animation: "cdFloat 2s ease-in-out infinite", filter: "drop-shadow(0 6px 6px rgba(0,0,0,0.3))" }}>{result.won ? "🏆" : "💥"}</p>
-          <h2 className="text-2xl font-black text-fuchsia-800">{result.won ? `Bölüm ${levelNo} Tamamlandı!` : "Bölüm Başarısız"}</h2>
+          <p className="text-6xl mb-2" style={{ animation: "cdFloat 2s ease-in-out infinite", filter: "drop-shadow(0 6px 6px rgba(0,0,0,0.3))" }}>{result.won ? (result.cfg.isBoss ? "👹" : "🏆") : "💥"}</p>
+          <h2 className="text-2xl font-black text-fuchsia-800">{result.won ? (result.cfg.isBoss ? "Golem Yenildi!" : `Bölüm ${levelNo} Tamamlandı!`) : "Bölüm Başarısız"}</h2>
           <p className="text-sm text-fuchsia-700 font-semibold mt-1">{objectiveText(result.cfg)}</p>
           <div className="flex justify-center gap-1 text-4xl my-3">
             {[1, 2, 3].map((s) => (
@@ -1927,9 +2025,12 @@ export default function CandyDodgeApp() {
     : screenBg;
 
   return (
-    <div className="min-h-[620px] w-full flex items-start justify-center py-4 rounded-3xl relative overflow-hidden" style={{ background: bg }}>
+    <div className="fixed inset-0 overflow-auto" style={{ background: bg }}>
       <style>{CSS}</style>
-      {content}
+      <KeyWhiteFilter />
+      <div style={{ width: 420, margin: "0 auto", padding: "8px 0", transform: `scale(${scale})`, transformOrigin: "top center" }}>
+        {content}
+      </div>
       <StoryModal />
       <Toast />
     </div>
